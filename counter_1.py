@@ -75,6 +75,7 @@ import copy
 defaults = {
     'mode': "模式A: PK淘汰賽",
     'team_count': 5,
+    'team_count_b': 6,
     'round_stage': 1,
     'mistakes': {},
     'round_history': {},
@@ -107,15 +108,17 @@ for k, v in defaults.items():
 
 def reset_game():
     tc = st.session_state.get('team_count', 5)
+    tcb = st.session_state.get('team_count_b', 6)
     mode = st.session_state.get('mode', "模式A: PK淘汰賽")
     for k, v in defaults.items():
         st.session_state[k] = copy.deepcopy(v)
     st.session_state.team_count = tc
+    st.session_state.team_count_b = tcb
     st.session_state.mode = mode
     if mode == "模式A: PK淘汰賽":
         st.session_state.mistakes = {f"第{i}組": 0 for i in range(1, tc + 1)}
     else:
-        st.session_state.mistakes = {f"第{i}組": 0 for i in range(1, 7)}
+        st.session_state.mistakes = {f"第{i}組": 0 for i in range(1, tcb + 1)}
 
 
 # 首次啟動初始化 mistakes
@@ -337,6 +340,13 @@ with st.sidebar:
             st.session_state.team_count = new_tc
             reset_game()
             st.rerun()
+    else:
+        new_tcb = st.selectbox("參賽總組數", [2, 3, 4, 5, 6, 7, 8],
+                               index=[2,3,4,5,6,7,8].index(st.session_state.team_count_b))
+        if new_tcb != st.session_state.team_count_b:
+            st.session_state.team_count_b = new_tcb
+            reset_game()
+            st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 重新開始賽事"):
@@ -447,17 +457,16 @@ if st.session_state.champion:
 #  模式 B：純計時賽
 # ═══════════════════════════════════════════
 if st.session_state.mode == "模式B: 純計時賽":
+    tcb = st.session_state.team_count_b
     st.markdown("### 模式 B：純計時賽 (獨立進行，不捉對廝殺)")
     st.info("計分標準：2 分鐘內失誤數最少的組別獲勝。失誤包含：過低、偏離Range、停滯。")
 
-    cols = st.columns(6)
-    for i in range(1, 7):
+    cols = st.columns(tcb)
+    for i in range(1, tcb + 1):
         team_name = f"第{i}組"
         st.session_state.mistakes.setdefault(team_name, 0)
         with cols[i - 1]:
-            label = f"<h3>{team_name}<br><span class='seed-text'>(友善組)</span></h3>" if i in [5, 6] \
-                    else f"<h3>{team_name}</h3>"
-            st.markdown(label, unsafe_allow_html=True)
+            st.markdown(f"<h3>{team_name}</h3>", unsafe_allow_html=True)
             st.session_state.mistakes[team_name] = st.number_input(
                 "失誤數", min_value=0, value=st.session_state.mistakes[team_name], key=f"modeB_{team_name}"
             )
@@ -465,7 +474,7 @@ if st.session_state.mode == "模式B: 純計時賽":
     st.markdown("---")
     if st.button("🏁 結算純計時賽總成績"):
         results = sorted(
-            [(f"第{i}組", st.session_state.mistakes[f"第{i}組"]) for i in range(1, 7)],
+            [(f"第{i}組", st.session_state.mistakes[f"第{i}組"]) for i in range(1, tcb + 1)],
             key=lambda x: x[1]
         )
         champion_b = results[0][0]
@@ -486,7 +495,7 @@ if st.session_state.mode == "模式B: 純計時賽":
     st.markdown("### ⚡ 同分猜拳 PK")
     st.caption("若有隊伍失誤相同，請加入對組進行猜拳決勝。")
 
-    teams_b = [f"第{i}組" for i in range(1, 7)]
+    teams_b = [f"第{i}組" for i in range(1, tcb + 1)]
     bcol1, bcol2, bcol3 = st.columns([2, 2, 1])
     with bcol1:
         b_team_a = st.selectbox("隊伍 A", teams_b, key="b_janken_a")
