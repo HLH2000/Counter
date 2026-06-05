@@ -70,45 +70,57 @@ st.markdown("""
 # ═══════════════════════════════════════════
 #  狀態初始化
 # ═══════════════════════════════════════════
+import copy
+
 defaults = {
     'mode': "模式A: PK淘汰賽",
     'team_count': 5,
     'round_stage': 1,
     'mistakes': {},
-    'round_history': {},       # {team: [r1,r2,r3...]}  各輪失誤
+    'round_history': {},
     'advancing': [],
     'show_results': False,
     'tournament_state': {},
     'champion': None,
     'fewest_mistakes_winner': None,
-    'all_mistakes_log': {},    # {team: best_single_round}
+    'all_mistakes_log': {},
     'timer_end': None,
     'timer_label': "",
     'timer_color': "#00FFFF",
-    # 晉級同分（舊邏輯：歷史輪次 → 先落地）
-    'tie_matches': [],         # [(t_a, t_b, score)]
-    'tie_resolutions': {},     # {(t_a,t_b): winner}
-    'locked_winners': [],      # [(match, winner)]
-    # 猜拳 PK（只在「失誤最少特別獎」同分時啟動，冠軍公布後）
-    'award_janken_matches': [],   # [(t_a, t_b)]  待猜拳的特別獎候選對
-    'award_janken_state': {},     # {(t_a,t_b): {rounds,score_a,score_b}}
-    'award_janken_winner': None,  # 猜拳決出的特別獎得主
-    # 模式B 猜拳（主賽同分）
+    'tie_matches': [],
+    'tie_resolutions': {},
+    'locked_winners': [],
+    # 特別獎猜拳（字串 winner）
+    'award_janken_matches': [],
+    'award_janken_state': {},
+    'award_janken_winner': None,
+    # 模式B 猜拳（dict winner）
     'b_janken_pairs': [],
     'b_janken_state': {},
     'b_janken_resolutions': {},
 }
-import copy
+
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = copy.deepcopy(v)
 
 
 def reset_game():
-    import copy
+    tc = st.session_state.get('team_count', 5)
+    mode = st.session_state.get('mode', "模式A: PK淘汰賽")
     for k, v in defaults.items():
         st.session_state[k] = copy.deepcopy(v)
-    st.session_state.mistakes = {f"第{i}組": 0 for i in range(1, 9)}
+    st.session_state.team_count = tc
+    st.session_state.mode = mode
+    if mode == "模式A: PK淘汰賽":
+        st.session_state.mistakes = {f"第{i}組": 0 for i in range(1, tc + 1)}
+    else:
+        st.session_state.mistakes = {f"第{i}組": 0 for i in range(1, 7)}
+
+
+# 首次啟動初始化 mistakes
+if not st.session_state.mistakes:
+    reset_game()
 
 
 # ───────────────────────────────────────────
@@ -138,12 +150,6 @@ def update_best_log(matchups):
 
 
 def resolve_tie_modeA(t_a, t_b):
-    """
-    比較兩隊歷史各輪失誤：
-    - 找到第一個不同的輪次 → 失誤少的勝
-    - 某輪只有一方有記錄 → 有記錄方勝（有比過的贏）
-    - 所有輪次完全相同 → 回傳 'tie'（先落地裁決）
-    """
     hist_a = st.session_state.round_history.get(t_a, [])
     hist_b = st.session_state.round_history.get(t_b, [])
     max_rounds = max(len(hist_a), len(hist_b), 1)
@@ -160,15 +166,10 @@ def resolve_tie_modeA(t_a, t_b):
             return t_a
         if vb < va:
             return t_b
-    return 'tie'   # 完全相同 → 先落地裁決
+    return 'tie'
 
 
 def find_fewest_mistakes_candidates(champion):
-    """
-    模式A：排除冠軍後，找出最佳單場失誤最少的隊伍。
-    若有複數隊伍並列最少（且與冠軍不同分），回傳清單供猜拳。
-    回傳 (winner_or_None, score, [tied_teams])
-    """
     log = st.session_state.all_mistakes_log
     champion_score = log.get(champion, 0)
     candidates = sorted(
@@ -178,22 +179,18 @@ def find_fewest_mistakes_candidates(champion):
     if not candidates:
         return None, None, []
     best_score = candidates[0][1]
-    # 找所有並列最少的（且分數不能等於冠軍最佳單場）
     tied = [t for t, s in candidates if s == best_score and s != champion_score]
-    non_tied = [t for t, s in candidates if s == best_score]  # 含同冠軍分數者
 
     if not tied:
-        # 全部都跟冠軍同分 → 順延至下一名
         for t, s in candidates:
             if s != champion_score:
                 return t, s, []
-        # 真的全同分，取第一個
         return candidates[0][0], candidates[0][1], []
 
     if len(tied) == 1:
         return tied[0], best_score, []
     else:
-        return None, best_score, tied   # 需猜拳決定
+        return None, best_score, tied
 
 
 def compute_fewest_mistakes_award_modeB(results):
@@ -204,12 +201,13 @@ def compute_fewest_mistakes_award_modeB(results):
 
 # ───────────────────────────────────────────
 #  猜拳 PK 面板（通用）
-#  state_dict: session_state 裡存放該場猜拳狀態的 dict key
-#  resolution_key: session_state 裡存放結果的 key（字串）
-#  pair: (t_a, t_b)
-#  key_prefix: widget key 前綴
+#
+#  resolution_mode:
+#    'str'  → st.session_state[resolution_key] 是字串 (None or winner_name)
+#    'dict' → st.session_state[resolution_key] 是 dict {pair: winner_name}
 # ───────────────────────────────────────────
-def render_janken_panel(pair, state_key, resolution_key, key_prefix="jk"):
+def render_janken_panel(pair, state_key, resolution_key,
+                        key_prefix="jk", resolution_mode='dict'):
     t_a, t_b = pair
     TOTAL = 5
 
@@ -220,11 +218,16 @@ def render_janken_panel(pair, state_key, resolution_key, key_prefix="jk"):
     js = state_dict[pair]
     completed = len(js['rounds'])
     sa, sb = js['score_a'], js['score_b']
-    remaining = TOTAL - completed
-    already_won = st.session_state[resolution_key] is not None if isinstance(st.session_state[resolution_key], str) \
-                  else pair in (st.session_state[resolution_key] or {})
 
-    # 判斷提前決出 or 5局結束
+    # 讀取現有結果
+    if resolution_mode == 'str':
+        current_winner = st.session_state[resolution_key]
+        already_won = current_winner is not None
+    else:
+        current_winner = st.session_state[resolution_key].get(pair)
+        already_won = pair in st.session_state[resolution_key]
+
+    # 判斷是否可提前決出
     def check_decide():
         rem = TOTAL - len(js['rounds'])
         if js['score_a'] > js['score_b'] and js['score_b'] + rem < js['score_a']:
@@ -237,19 +240,12 @@ def render_janken_panel(pair, state_key, resolution_key, key_prefix="jk"):
         return None
 
     decided = check_decide()
-    # 寫入結果（支援 dict 或直接字串型態）
     if decided and not already_won:
-        if isinstance(st.session_state[resolution_key], dict):
-            st.session_state[resolution_key][pair] = decided
-        else:
+        if resolution_mode == 'str':
             st.session_state[resolution_key] = decided
+        else:
+            st.session_state[resolution_key][pair] = decided
         st.rerun()
-
-    # 取得目前結果
-    if isinstance(st.session_state[resolution_key], dict):
-        current_winner = st.session_state[resolution_key].get(pair)
-    else:
-        current_winner = st.session_state[resolution_key]
 
     st.markdown(f"""
     <div class='janken-box'>
@@ -267,14 +263,13 @@ def render_janken_panel(pair, state_key, resolution_key, key_prefix="jk"):
                     unsafe_allow_html=True)
         if st.button(f"↩️ 重置猜拳（{t_a} vs {t_b}）", key=f"{key_prefix}_reset_{t_a}_{t_b}"):
             state_dict.pop(pair, None)
-            if isinstance(st.session_state[resolution_key], dict):
-                st.session_state[resolution_key].pop(pair, None)
-            else:
+            if resolution_mode == 'str':
                 st.session_state[resolution_key] = None
+            else:
+                st.session_state[resolution_key].pop(pair, None)
             st.rerun()
         return
 
-    # 顯示歷史
     if js['rounds']:
         lines = []
         for idx, r in enumerate(js['rounds'], 1):
@@ -325,19 +320,23 @@ def render_janken_panel(pair, state_key, resolution_key, key_prefix="jk"):
 
 # ═══════════════════════════════════════════
 #  側邊欄
+#  ⚠️  計時器放到主畫面底部，避免 sidebar rerun 吃掉按鈕事件
 # ═══════════════════════════════════════════
 with st.sidebar:
     st.title("⚙️ 裁判控制台")
+
     new_mode = st.radio("選擇賽制模式", ["模式A: PK淘汰賽", "模式B: 純計時賽"], index=0)
     if new_mode != st.session_state.mode:
         st.session_state.mode = new_mode
         reset_game()
+        st.rerun()
 
     if st.session_state.mode == "模式A: PK淘汰賽":
-        new_tc = st.selectbox("參賽總組數", [5, 6, 7, 8], index=0)
+        new_tc = st.selectbox("參賽總組數", [5, 6, 7, 8], index=[5,6,7,8].index(st.session_state.team_count))
         if new_tc != st.session_state.team_count:
             st.session_state.team_count = new_tc
             reset_game()
+            st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 重新開始賽事"):
@@ -346,33 +345,37 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### ⏱️ 快速計時器")
-    timer_placeholder = st.empty()
+
     col1, col2 = st.columns(2)
     with col1:
         if st.button("30秒\n暖身"):
             st.session_state.timer_end = time.time() + 30
             st.session_state.timer_label = "暖身倒數"
             st.session_state.timer_color = "#00FFFF"
+            st.rerun()
     with col2:
         if st.button("2分鐘\n正式"):
             st.session_state.timer_end = time.time() + 120
             st.session_state.timer_label = "正式比賽"
             st.session_state.timer_color = "#4CAF50"
+            st.rerun()
 
     if st.session_state.timer_end:
-        remaining = int(st.session_state.timer_end - time.time())
-        if remaining > 0:
-            timer_placeholder.markdown(
+        remaining_t = int(st.session_state.timer_end - time.time())
+        if remaining_t > 0:
+            st.markdown(
                 f"<h2 style='text-align:center; color:{st.session_state.timer_color} !important;'>"
-                f"{st.session_state.timer_label}: {remaining} 秒</h2>",
+                f"{st.session_state.timer_label}: {remaining_t} 秒</h2>",
                 unsafe_allow_html=True)
-            time.sleep(1)
-            st.rerun()
         else:
-            timer_placeholder.markdown(
+            st.markdown(
                 "<h2 style='text-align:center; color:#FF4444 !important;'>⏰ 時間到！</h2>",
                 unsafe_allow_html=True)
             st.session_state.timer_end = None
+
+    if st.button("⏹ 停止計時"):
+        st.session_state.timer_end = None
+        st.rerun()
 
 
 # ═══════════════════════════════════════════
@@ -380,9 +383,8 @@ with st.sidebar:
 # ═══════════════════════════════════════════
 st.title("🏆 社區健康挑戰賽 - 賽況看板")
 
-
 # ────────────────────────────────────────────
-#  冠軍公布畫面（含失誤最少特別獎 & 猜拳決定）
+#  冠軍公布畫面
 # ────────────────────────────────────────────
 if st.session_state.champion:
     st.balloons()
@@ -396,7 +398,6 @@ if st.session_state.champion:
     winner_direct, best_score, tied_teams = find_fewest_mistakes_candidates(champion)
 
     if st.session_state.award_janken_winner:
-        # 猜拳已決出
         fw = st.session_state.award_janken_winner
         fs = st.session_state.all_mistakes_log.get(fw, 0)
         st.markdown(f"""
@@ -408,7 +409,6 @@ if st.session_state.champion:
         """, unsafe_allow_html=True)
 
     elif winner_direct:
-        # 直接決出，不需猜拳
         st.markdown(f"""
         <div class='fewest-award-box'>
             <div class='fewest-award-title'>🎖️ 全場失誤最少特別獎</div>
@@ -418,7 +418,6 @@ if st.session_state.champion:
         """, unsafe_allow_html=True)
 
     elif tied_teams:
-        # 並列需猜拳
         st.warning(f"⚠️ 以下 {len(tied_teams)} 隊最佳單場均為 {best_score} 次失誤，需猜拳決定特別獎！")
         for i in range(len(tied_teams) - 1):
             pair = (tied_teams[i], tied_teams[i + 1])
@@ -431,11 +430,16 @@ if st.session_state.champion:
                 pair,
                 state_key='award_janken_state',
                 resolution_key='award_janken_winner',
-                key_prefix="award_jk"
+                key_prefix="award_jk",
+                resolution_mode='str'   # ← 修正：特別獎用字串模式
             )
     else:
         st.info("無法決定特別獎（所有隊伍均與冠軍同分）。")
 
+    # 計時器顯示（冠軍頁面也要自動刷新）
+    if st.session_state.timer_end and st.session_state.timer_end > time.time():
+        time.sleep(1)
+        st.rerun()
     st.stop()
 
 
@@ -478,7 +482,6 @@ if st.session_state.mode == "模式B: 純計時賽":
             </div>
             """, unsafe_allow_html=True)
 
-    # ── 模式B 同分猜拳區 ──
     st.markdown("---")
     st.markdown("### ⚡ 同分猜拳 PK")
     st.caption("若有隊伍失誤相同，請加入對組進行猜拳決勝。")
@@ -499,7 +502,8 @@ if st.session_state.mode == "模式B: 純計時賽":
                 st.rerun()
 
     for pair in st.session_state.b_janken_pairs:
-        render_janken_panel(pair, 'b_janken_state', 'b_janken_resolutions', key_prefix="b_jk")
+        render_janken_panel(pair, 'b_janken_state', 'b_janken_resolutions',
+                            key_prefix="b_jk", resolution_mode='dict')
 
     if st.session_state.b_janken_pairs:
         if st.button("🗑️ 清除所有猜拳對組"):
@@ -633,7 +637,7 @@ elif st.session_state.mode == "模式A: PK淘汰賽":
             st.session_state.advancing = final_winners
             st.session_state.show_results = True
 
-    # ── 先落地裁決窗格（歷史完全相同時）──
+    # ── 先落地裁決 ──
     if st.session_state.tie_matches:
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("## ⚡ 先落地裁決")
@@ -673,7 +677,8 @@ elif st.session_state.mode == "模式A: PK淘汰賽":
                         st.rerun()
                     st.markdown("</div>", unsafe_allow_html=True)
 
-        if ties_all_done := (len(st.session_state.tie_resolutions) == len(st.session_state.tie_matches)):
+        ties_all_done = len(st.session_state.tie_resolutions) == len(st.session_state.tie_matches)
+        if ties_all_done:
             st.success("✅ 所有裁決完成！可點擊「大螢幕揭曉晉級名單」。")
         else:
             st.warning(f"⏳ 尚有 {len(st.session_state.tie_matches) - len(st.session_state.tie_resolutions)} 場待裁決。")
@@ -690,7 +695,6 @@ elif st.session_state.mode == "模式A: PK淘汰賽":
         if is_final:
             if st.button("🏆 正式宣佈總冠軍！", type="primary"):
                 st.session_state.champion = st.session_state.advancing[0]
-                # 重置特別獎猜拳狀態
                 st.session_state.award_janken_matches = []
                 st.session_state.award_janken_state = {}
                 st.session_state.award_janken_winner = None
@@ -721,3 +725,8 @@ elif st.session_state.mode == "模式A: PK淘汰賽":
                 for k in list(st.session_state.mistakes.keys()):
                     st.session_state.mistakes[k] = 0
                 st.rerun()
+
+# ── 計時器自動刷新（放主畫面最底部，避免搶在按鈕事件前觸發）──
+if st.session_state.timer_end and st.session_state.timer_end > time.time():
+    time.sleep(1)
+    st.rerun()
