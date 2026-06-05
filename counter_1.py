@@ -98,14 +98,16 @@ defaults = {
     'b_janken_state': {},
     'b_janken_resolutions': {},
 }
+import copy
 for k, v in defaults.items():
     if k not in st.session_state:
-        st.session_state[k] = v
+        st.session_state[k] = copy.deepcopy(v)
 
 
 def reset_game():
+    import copy
     for k, v in defaults.items():
-        st.session_state[k] = v
+        st.session_state[k] = copy.deepcopy(v)
     st.session_state.mistakes = {f"第{i}組": 0 for i in range(1, 9)}
 
 
